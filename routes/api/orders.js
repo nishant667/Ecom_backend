@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Order = require('../../models/Order');
 const Cart = require('../../models/Cart');
+const Product = require('../../models/Product');
 const jwt = require('jsonwebtoken');
 
 // Middleware to verify JWT token
@@ -30,11 +31,17 @@ router.post('/checkout', authenticateToken, async (req, res) => {
     if (!cart || cart.items.length === 0) {
       return res.status(400).json({ error: 'Cart is empty' });
     }
-    
-    // Calculate total
-    const total = cart.items.reduce((sum, item) => {
-      return sum + (item.product.price * item.quantity);
-    }, 0);
+
+    // Check stock availability and calculate total
+    let total = 0;
+    for (const item of cart.items) {
+      if (item.product.stock < item.quantity) {
+        return res.status(400).json({ 
+          error: `Insufficient stock for ${item.product.name}. Available: ${item.product.stock}, Requested: ${item.quantity}` 
+        });
+      }
+      total += item.product.price * item.quantity;
+    }
     
     // Create order
     const order = new Order({
@@ -51,6 +58,14 @@ router.post('/checkout', authenticateToken, async (req, res) => {
     });
     
     await order.save();
+    
+    // Update product stock
+    for (const item of cart.items) {
+      await Product.findByIdAndUpdate(
+        item.product._id,
+        { $inc: { stock: -item.quantity } }
+      );
+    }
     
     // Clear cart
     cart.items = [];
@@ -93,8 +108,7 @@ router.post('/checkout', authenticateToken, async (req, res) => {
 // Get user's order history
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.userId })
-      .populate('items.product')
+    const orders = await Order.find({ userId: req.userId })
       .sort({ createdAt: -1 });
     
     res.json({ success: true, orders });
@@ -109,8 +123,8 @@ router.get('/:orderId', authenticateToken, async (req, res) => {
   try {
     const order = await Order.findOne({ 
       _id: req.params.orderId, 
-      user: req.userId 
-    }).populate('items.product');
+      userId: req.userId 
+    });
     
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
@@ -130,7 +144,7 @@ router.post('/payment/success', authenticateToken, async (req, res) => {
     
     const order = await Order.findOne({ 
       _id: orderId, 
-      user: req.userId 
+      userId: req.userId 
     });
     
     if (!order) {
@@ -170,7 +184,7 @@ router.post('/payment/failed', authenticateToken, async (req, res) => {
     
     const order = await Order.findOne({ 
       _id: orderId, 
-      user: req.userId 
+      userId: req.userId 
     });
     
     if (!order) {
@@ -184,6 +198,89 @@ router.post('/payment/failed', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to process payment failure' });
+  }
+});
+
+// Create Cash on Delivery Order
+router.post('/create-cod', authenticateToken, async (req, res) => {
+  try {
+    const { items, total_amount, shipping_details } = req.body;
+
+    // Validate required fields
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Items are required' 
+      });
+    }
+
+    if (!total_amount || !shipping_details) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Total amount and shipping details are required' 
+      });
+    }
+
+    // Check stock availability for all items
+    for (const item of items) {
+      const product = await Product.findById(item.product);
+      if (!product) {
+        return res.status(400).json({
+          success: false,
+          message: `Product not found`,
+        });
+      }
+      if (product.stock < item.quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`,
+        });
+      }
+    }
+
+    // Create Cash on Delivery order
+    const order = new Order({
+      user: req.userId,
+      items: items,
+      total_amount: total_amount,
+      payment_method: 'cash_on_delivery',
+      payment_status: 'pending', // COD orders are pending until delivery
+      shipping_details: shipping_details,
+      order_status: 'confirmed',
+    });
+
+    await order.save();
+
+    // Update product stock
+    for (const item of items) {
+      await Product.findByIdAndUpdate(
+        item.product,
+        { $inc: { stock: -item.quantity } }
+      );
+    }
+
+    // Clear user's cart
+    const Cart = require('../../models/Cart');
+    await Cart.findOneAndUpdate(
+      { user: req.userId },
+      { $set: { items: [] } }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Cash on Delivery order placed successfully',
+      order_id: order._id,
+      order_status: 'confirmed',
+      payment_method: 'cash_on_delivery',
+    });
+
+  } catch (error) {
+    console.error('COD order creation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create COD order',
+      error: error.message,
+    });
   }
 });
 

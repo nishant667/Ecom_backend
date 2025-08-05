@@ -93,6 +93,66 @@ router.post('/logout', (req, res) => {
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
+// Google Sign-In
+router.post('/google', async (req, res) => {
+  try {
+    const { uid, name, email, photoUrl } = req.body;
+    
+    console.log('Google Sign-In request received:', { uid, name, email, photoUrl });
+    
+    if (!uid || !email) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    const User = require('../../models/User');
+    
+    // Check if user already exists
+    let user = await User.findOne({ email });
+    
+    if (!user) {
+      // Create new user
+      user = new User({
+        username: name || email.split('@')[0],
+        email: email,
+        googleId: uid,
+        profileImage: photoUrl
+      });
+      await user.save();
+      console.log('New Google user created:', user.email);
+    } else {
+      // Update existing user with Google info
+      user.googleId = uid;
+      if (photoUrl) user.profileImage = photoUrl;
+      await user.save();
+      console.log('Existing user updated with Google info:', user.email);
+    }
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id, email: user.email },
+      process.env.JWT_SECRET || 'your_jwt_secret',
+      { expiresIn: '24h' }
+    );
+    
+    console.log('Google Sign-In successful for:', user.email);
+    
+    res.json({
+      success: true,
+      message: 'Google Sign-In successful',
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        profileImage: user.profileImage
+      }
+    });
+  } catch (err) {
+    console.error('Google Sign-In error:', err);
+    res.status(500).json({ error: 'Google Sign-In failed. Please try again.' });
+  }
+});
+
 // Get user profile
 router.get('/profile', async (req, res) => {
   try {
@@ -112,6 +172,39 @@ router.get('/profile', async (req, res) => {
     res.json({ success: true, user });
   } catch (err) {
     console.error(err);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// Get current user (for session restoration)
+router.get('/me', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret');
+    const User = require('../../models/User');
+    const user = await User.findById(decoded.userId).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    console.log('✅ Session validation successful for user:', user.email);
+    
+    res.json({ 
+      success: true, 
+      user: {
+        id: user._id,
+        name: user.username,
+        email: user.email,
+        photoUrl: user.profileImage
+      }
+    });
+  } catch (err) {
+    console.error('❌ Session validation failed:', err);
     res.status(401).json({ error: 'Invalid token' });
   }
 });

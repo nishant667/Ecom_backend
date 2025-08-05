@@ -5,7 +5,7 @@ const Product = require('../../models/Product');
 // Get all products (API version)
 router.get('/', async (req, res) => {
   try {
-    const { category, search, sort, page = 1, limit = 10 } = req.query;
+    const { category, search, sort, page = 1, limit = 50 } = req.query;
     let filter = {};
     
     if (category) {
@@ -33,6 +33,11 @@ router.get('/', async (req, res) => {
     
     const products = await query;
     const total = await Product.countDocuments(filter);
+    
+    console.log(`📦 Fetched ${products.length} products from database`);
+    products.forEach(product => {
+      console.log(`   - ${product.name} (₹${product.price}) - Stock: ${product.stock}`);
+    });
     
     res.json({
       success: true,

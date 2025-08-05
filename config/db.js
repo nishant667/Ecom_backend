@@ -2,13 +2,19 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
-    await mongoose.connect('mongodb+srv://nishant:nishu@cluster0.wrjbqsk.mongodb.net/ecommerce?retryWrites=true&w=majority&appName=Cluster0', {
+    const mongoUri = process.env.MONGO_URI;
+    if (!mongoUri) {
+      throw new Error('MONGO_URI environment variable is not set');
+    }
+    
+    await mongoose.connect(mongoUri, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
+      dbName: 'ecommerce' // Specify the database name
     });
-    console.log('MongoDB connected');
+    console.log('✅ MongoDB connected successfully to ecommerce database');
   } catch (err) {
-    console.error('MongoDB connection error:', err.message);
+    console.error('❌ MongoDB connection error:', err.message);
     process.exit(1);
   }
 };

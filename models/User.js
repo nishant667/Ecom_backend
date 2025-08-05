@@ -15,12 +15,18 @@ const userSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: true
+    required: function() {
+      return !this.googleId; // Password is only required if not using Google Sign-In
+    }
   },
   googleId: {
     type: String,
     unique: true,
     sparse: true
+  },
+  profileImage: {
+    type: String,
+    default: null
   },
   createdAt: {
     type: Date,
