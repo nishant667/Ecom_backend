@@ -13,7 +13,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'No token provided' });
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
     req.userId = decoded.userId;
     next();
   } catch (err) {
@@ -45,13 +45,15 @@ router.post('/checkout', authenticateToken, async (req, res) => {
     
     // Create order
     const order = new Order({
-      user: req.userId,
+      userId: req.userId,
       items: cart.items.map(item => ({
-        product: item.product._id,
+        productId: item.product._id,
+        name: item.product.name,
         quantity: item.quantity,
-        price: item.product.price
+        price: item.product.price,
+        imageUrl: item.product.imageUrl
       })),
-      total,
+      totalAmount: total,
       shippingAddress,
       paymentMethod,
       status: 'pending'
@@ -71,27 +73,37 @@ router.post('/checkout', authenticateToken, async (req, res) => {
     cart.items = [];
     await cart.save();
     
-    // Initialize payment (you can integrate with Razorpay/Stripe here)
+    // Initialize payment with Stripe
     let paymentData = {};
-    if (paymentMethod === 'razorpay') {
-      // Initialize Razorpay payment
-      const Razorpay = require('razorpay');
-      const razorpay = new Razorpay({
-        key_id: process.env.RAZORPAY_KEY_ID,
-        key_secret: process.env.RAZORPAY_KEY_SECRET
-      });
-      
-      const payment = await razorpay.orders.create({
-        amount: total * 100, // Razorpay expects amount in paise
-        currency: 'INR',
-        receipt: order._id.toString()
-      });
-      
-      paymentData = {
-        orderId: payment.id,
-        amount: payment.amount,
-        currency: payment.currency
-      };
+    if (paymentMethod === 'stripe') {
+      try {
+        // Import Stripe
+        const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+        
+        // Create Stripe payment intent
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(total * 100), // Convert to paise
+          currency: 'inr',
+          metadata: {
+            order_id: order._id.toString(),
+            user_id: req.userId
+          }
+        });
+        
+        paymentData = {
+          client_secret: paymentIntent.client_secret,
+          payment_intent_id: paymentIntent.id,
+          amount: paymentIntent.amount,
+          currency: paymentIntent.currency
+        };
+      } catch (stripeError) {
+        console.error('Stripe payment intent creation failed:', stripeError);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to create Stripe payment intent',
+          details: stripeError.message
+        });
+      }
     }
     
     res.json({
@@ -140,7 +152,7 @@ router.get('/:orderId', authenticateToken, async (req, res) => {
 // Process payment success
 router.post('/payment/success', authenticateToken, async (req, res) => {
   try {
-    const { orderId, paymentId, signature } = req.body;
+    const { orderId, paymentIntentId } = req.body;
     
     const order = await Order.findOne({ 
       _id: orderId, 
@@ -151,22 +163,24 @@ router.post('/payment/success', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
     
-    // Verify payment signature (for Razorpay)
-    if (order.paymentMethod === 'razorpay') {
-      const crypto = require('crypto');
-      const expectedSignature = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(orderId + '|' + paymentId)
-        .digest('hex');
-      
-      if (expectedSignature !== signature) {
-        return res.status(400).json({ error: 'Invalid payment signature' });
+    // Verify payment with Stripe
+    if (order.paymentMethod === 'stripe' && paymentIntentId) {
+      try {
+        const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+        const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+        
+        if (paymentIntent.status !== 'succeeded') {
+          return res.status(400).json({ error: 'Payment not completed' });
+        }
+      } catch (stripeError) {
+        console.error('Stripe payment verification failed:', stripeError);
+        return res.status(400).json({ error: 'Payment verification failed' });
       }
     }
     
     // Update order status
     order.status = 'paid';
-    order.paymentId = paymentId;
+    order.paymentId = paymentIntentId;
     order.paidAt = new Date();
     await order.save();
     
@@ -240,13 +254,18 @@ router.post('/create-cod', authenticateToken, async (req, res) => {
 
     // Create Cash on Delivery order
     const order = new Order({
-      user: req.userId,
-      items: items,
-      total_amount: total_amount,
-      payment_method: 'cash_on_delivery',
-      payment_status: 'pending', // COD orders are pending until delivery
-      shipping_details: shipping_details,
-      order_status: 'confirmed',
+      userId: req.userId,
+      items: items.map(item => ({
+        productId: item.product,
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        imageUrl: item.imageUrl
+      })),
+      totalAmount: total_amount,
+      paymentMethod: 'cash_on_delivery',
+      status: 'confirmed',
+      shippingAddress: shipping_details,
     });
 
     await order.save();
@@ -262,7 +281,7 @@ router.post('/create-cod', authenticateToken, async (req, res) => {
     // Clear user's cart
     const Cart = require('../../models/Cart');
     await Cart.findOneAndUpdate(
-      { user: req.userId },
+      { userId: req.userId },
       { $set: { items: [] } }
     );
 
