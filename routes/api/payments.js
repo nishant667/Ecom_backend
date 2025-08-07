@@ -1,15 +1,63 @@
 const express = require('express');
 const router = express.Router();
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const jwt = require('jsonwebtoken');
 const Order = require('../../models/Order');
 const Product = require('../../models/Product');
 const Cart = require('../../models/Cart');
 
+// Simple Stripe initialization
+let stripe;
+try {
+  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  if (stripeSecretKey) {
+    // Remove any potential invalid characters and clean the key
+    const cleanKey = stripeSecretKey.trim().replace(/[^\w\-_]/g, '');
+    if (cleanKey.startsWith('sk_test_') || cleanKey.startsWith('sk_live_')) {
+      stripe = require('stripe')(cleanKey);
+      console.log('✅ Stripe initialized with key:', cleanKey.substring(0, 12) + '...');
+    } else {
+      console.error('❌ Invalid Stripe key format');
+    }
+  } else {
+    console.error('❌ STRIPE_SECRET_KEY not found');
+  }
+} catch (error) {
+  console.error('❌ Stripe initialization error:', error.message);
+}
+
+// Check environment variables
+router.get('/env-check', async (req, res) => {
+  res.json({
+    success: true,
+    envVars: {
+      STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ? 'SET' : 'NOT SET',
+      JWT_SECRET: process.env.JWT_SECRET ? 'SET' : 'NOT SET',
+      MONGO_URI: process.env.MONGO_URI ? 'SET' : 'NOT SET'
+    }
+  });
+});
+
 // Test Stripe connection endpoint
 router.get('/test-stripe', async (req, res) => {
   try {
     console.log('🔄 Testing Stripe connection...');
+    console.log('🔑 Environment variables:');
+    console.log('  - STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? 'SET' : 'NOT SET');
+    console.log('  - JWT_SECRET:', process.env.JWT_SECRET ? 'SET' : 'NOT SET');
+    
+    if (!stripe) {
+      console.log('❌ Stripe not initialized');
+      return res.status(500).json({
+        success: false,
+        message: 'Stripe not initialized. Check STRIPE_SECRET_KEY configuration.',
+        error: 'Stripe initialization failed',
+        envVars: {
+          STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ? 'SET' : 'NOT SET',
+          JWT_SECRET: process.env.JWT_SECRET ? 'SET' : 'NOT SET'
+        }
+      });
+    }
+
     console.log('🔑 Stripe key prefix:', process.env.STRIPE_SECRET_KEY?.substring(0, 7));
     
     if (!process.env.STRIPE_SECRET_KEY) {
@@ -34,7 +82,11 @@ router.get('/test-stripe', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Stripe connection failed',
-      error: error.message
+      error: error.message,
+      envVars: {
+        STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ? 'SET' : 'NOT SET',
+        JWT_SECRET: process.env.JWT_SECRET ? 'SET' : 'NOT SET'
+      }
     });
   }
 });
@@ -47,7 +99,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ message: 'Access token required' });
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
     req.userId = decoded.userId;
     next();
   } catch (error) {
@@ -59,6 +111,17 @@ const authenticateToken = async (req, res, next) => {
 router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
   try {
     console.log('🔄 Creating Stripe payment intent...');
+    
+    // Check if Stripe is initialized
+    if (!stripe) {
+      console.log('❌ Stripe not initialized');
+      return res.status(500).json({
+        success: false,
+        message: 'Stripe not initialized. Check STRIPE_SECRET_KEY configuration.',
+        error: 'Stripe initialization failed'
+      });
+    }
+    
     console.log('🔑 Stripe key prefix:', process.env.STRIPE_SECRET_KEY?.substring(0, 7));
     
     const { amount, currency = 'inr', items, shipping } = req.body;
