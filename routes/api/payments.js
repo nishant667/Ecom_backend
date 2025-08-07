@@ -5,24 +5,49 @@ const Order = require('../../models/Order');
 const Product = require('../../models/Product');
 const Cart = require('../../models/Cart');
 
-// Simple Stripe initialization
-let stripe;
-try {
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-  if (stripeSecretKey) {
-    // Remove any potential invalid characters and clean the key
-    const cleanKey = stripeSecretKey.trim().replace(/[^\w\-_]/g, '');
-    if (cleanKey.startsWith('sk_test_') || cleanKey.startsWith('sk_live_')) {
-      stripe = require('stripe')(cleanKey);
-      console.log('✅ Stripe initialized with key:', cleanKey.substring(0, 12) + '...');
-    } else {
-      console.error('❌ Invalid Stripe key format');
+// Robust Stripe initialization with retry logic
+let stripe = null;
+
+function initializeStripe() {
+  try {
+    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    if (!stripeSecretKey) {
+      console.error('❌ STRIPE_SECRET_KEY not found');
+      return false;
     }
-  } else {
-    console.error('❌ STRIPE_SECRET_KEY not found');
+
+    // Clean the key by removing any whitespace or invalid characters
+    const cleanKey = stripeSecretKey.trim().replace(/[^\w\-_]/g, '');
+    
+    if (!cleanKey.startsWith('sk_test_') && !cleanKey.startsWith('sk_live_')) {
+      console.error('❌ Invalid Stripe key format. Must start with sk_test_ or sk_live_');
+      return false;
+    }
+
+    stripe = require('stripe')(cleanKey, {
+      apiVersion: '2023-10-16',
+      timeout: 30000,
+      maxNetworkRetries: 3,
+    });
+    
+    console.log('✅ Stripe initialized with key:', cleanKey.substring(0, 12) + '...');
+    return true;
+  } catch (error) {
+    console.error('❌ Stripe initialization error:', error.message);
+    return false;
   }
-} catch (error) {
-  console.error('❌ Stripe initialization error:', error.message);
+}
+
+// Initialize Stripe on startup
+initializeStripe();
+
+// Function to get or reinitialize Stripe
+function getStripe() {
+  if (!stripe) {
+    console.log('🔄 Reinitializing Stripe...');
+    initializeStripe();
+  }
+  return stripe;
 }
 
 // Check environment variables
@@ -45,7 +70,8 @@ router.get('/test-stripe', async (req, res) => {
     console.log('  - STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? 'SET' : 'NOT SET');
     console.log('  - JWT_SECRET:', process.env.JWT_SECRET ? 'SET' : 'NOT SET');
     
-    if (!stripe) {
+    const stripeInstance = getStripe();
+    if (!stripeInstance) {
       console.log('❌ Stripe not initialized');
       return res.status(500).json({
         success: false,
@@ -68,7 +94,7 @@ router.get('/test-stripe', async (req, res) => {
     }
 
     // Test basic Stripe API call
-    const paymentMethods = await stripe.paymentMethods.list({ limit: 1 });
+    const paymentMethods = await stripeInstance.paymentMethods.list({ limit: 1 });
     console.log('✅ Stripe connection successful');
     
     res.json({
@@ -113,7 +139,8 @@ router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
     console.log('🔄 Creating Stripe payment intent...');
     
     // Check if Stripe is initialized
-    if (!stripe) {
+    const stripeInstance = getStripe();
+    if (!stripeInstance) {
       console.log('❌ Stripe not initialized');
       return res.status(500).json({
         success: false,
@@ -164,7 +191,7 @@ router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
     // Test Stripe connection first
     try {
       console.log('🔄 Testing Stripe connection...');
-      await stripe.paymentMethods.list({ limit: 1 });
+      await stripeInstance.paymentMethods.list({ limit: 1 });
       console.log('✅ Stripe connection successful');
     } catch (stripeError) {
       console.error('❌ Stripe connection failed:', stripeError.message);
@@ -177,7 +204,7 @@ router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
 
     // Create Stripe Checkout Session
     console.log('🔄 Creating Stripe checkout session...');
-    const session = await stripe.checkout.sessions.create({
+    const session = await stripeInstance.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
