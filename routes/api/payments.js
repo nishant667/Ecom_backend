@@ -6,6 +6,39 @@ const Order = require('../../models/Order');
 const Product = require('../../models/Product');
 const Cart = require('../../models/Cart');
 
+// Test Stripe connection endpoint
+router.get('/test-stripe', async (req, res) => {
+  try {
+    console.log('🔄 Testing Stripe connection...');
+    console.log('🔑 Stripe key prefix:', process.env.STRIPE_SECRET_KEY?.substring(0, 7));
+    
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'Stripe secret key not configured'
+      });
+    }
+
+    // Test basic Stripe API call
+    const paymentMethods = await stripe.paymentMethods.list({ limit: 1 });
+    console.log('✅ Stripe connection successful');
+    
+    res.json({
+      success: true,
+      message: 'Stripe connection successful',
+      stripeKeyPrefix: process.env.STRIPE_SECRET_KEY.substring(0, 7),
+      paymentMethodsCount: paymentMethods.data.length
+    });
+  } catch (error) {
+    console.error('❌ Stripe connection test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Stripe connection failed',
+      error: error.message
+    });
+  }
+});
+
 // Middleware to authenticate JWT token
 const authenticateToken = async (req, res, next) => {
   try {
@@ -25,13 +58,28 @@ const authenticateToken = async (req, res, next) => {
 // Create Stripe Payment Intent and Checkout Session
 router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
   try {
+    console.log('🔄 Creating Stripe payment intent...');
+    console.log('🔑 Stripe key prefix:', process.env.STRIPE_SECRET_KEY?.substring(0, 7));
+    
     const { amount, currency = 'inr', items, shipping } = req.body;
+    console.log('📦 Request data:', { amount, currency, itemsCount: items?.length, shipping });
 
     // Validate required fields
     if (!amount || !items || !Array.isArray(items) || items.length === 0) {
+      console.log('❌ Validation failed: missing required fields');
       return res.status(400).json({ 
         success: false, 
         message: 'Amount and items are required' 
+      });
+    }
+
+    // Validate Stripe configuration
+    if (!process.env.STRIPE_SECRET_KEY) {
+      console.log('❌ Stripe secret key not configured');
+      return res.status(500).json({
+        success: false,
+        message: 'Stripe configuration error',
+        error: 'STRIPE_SECRET_KEY not set'
       });
     }
 
@@ -48,13 +96,30 @@ router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
       quantity: item.quantity,
     }));
 
+    console.log('📋 Line items created:', lineItems.length);
+
+    // Test Stripe connection first
+    try {
+      console.log('🔄 Testing Stripe connection...');
+      await stripe.paymentMethods.list({ limit: 1 });
+      console.log('✅ Stripe connection successful');
+    } catch (stripeError) {
+      console.error('❌ Stripe connection failed:', stripeError.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Stripe connection failed',
+        error: stripeError.message
+      });
+    }
+
     // Create Stripe Checkout Session
+    console.log('🔄 Creating Stripe checkout session...');
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/?payment=cancelled`,
+      success_url: `${process.env.FRONTEND_URL || 'https://inspiring-horse-384b0b.netlify.app'}/?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://inspiring-horse-384b0b.netlify.app'}/?payment=cancelled`,
       metadata: {
         user_id: req.userId,
         items: JSON.stringify(items),
@@ -86,6 +151,13 @@ router.post('/create-stripe-intent', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Stripe payment intent creation error:', error);
+    console.error('❌ Error details:', {
+      message: error.message,
+      type: error.type,
+      code: error.code,
+      statusCode: error.statusCode
+    });
+    
     res.status(500).json({
       success: false,
       message: 'Failed to create payment intent',
