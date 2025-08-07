@@ -12,7 +12,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'No token provided' });
     }
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
     req.userId = decoded.userId;
     next();
   } catch (err) {
